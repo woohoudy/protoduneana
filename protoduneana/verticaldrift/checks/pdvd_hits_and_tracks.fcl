@@ -35,6 +35,7 @@ physics:
       LogLevel:     2
       HitModuleLabel: "gaushit"
       TrackModuleLabel:  "pandoraTrack"
+      OutLevel: 2
       TrackMinLen:   20.0
      }
    }

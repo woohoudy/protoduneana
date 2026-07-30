@@ -22,6 +22,7 @@
 #include "fhiclcpp/ParameterSet.h"
 #include "messagefacility/MessageLogger/MessageLogger.h"
 #include "canvas/Persistency/Common/FindManyP.h"
+#include "canvas/Persistency/Common/FindOneP.h"
 
 #include "art_root_io/TFileService.h"
 
@@ -93,9 +94,18 @@ private:
   int      fFlagDetails = 4;
   //int      fFlagDebug = 5;
 
+  int     fWriteNothing = 0;
+  int     fWriteOnlyTrees = 1;
+  int     fWriteTreesAndCheckPlots = 2;
+  int     fWriteFull = 3;
+
+
+  bool fCathodeCrossing;
   string   fHitModuleLabel;
   string   fTrackModuleLabel;
   float    fTrackMinLen;
+  bool fWritePlots;
+  bool fHitSelected;
   int      ev_num;
 
   unsigned fTotalTracks;
@@ -122,6 +132,11 @@ private:
   float ftrackEndX;
   float ftrackEndY;
   float ftrackEndZ;
+
+  std::vector<int> ftrackStartChannel;
+  std::vector<int> ftrackStartWire;
+  std::vector<int> ftrackEndChannel;
+  std::vector<int> ftrackEndWire;
 
   float ftracktheta;
   float ftrackphi;
@@ -162,10 +177,11 @@ private:
 
 pdvdana::CheckHitsAndTracks::CheckHitsAndTracks(fhicl::ParameterSet const& p)
   : EDAnalyzer{p} ,
-  fLogLevel( p.get< int >("LogLevel") ),
-  fHitModuleLabel( p.get< std::string >("HitModuleLabel") ),
-  fTrackModuleLabel( p.get< std::string >("TrackModuleLabel") ),
-  fTrackMinLen( p.get< float  >("TrackMinLen") )
+  fLogLevel( p.get< int >("LogLevel", 2) ),
+  fHitModuleLabel( p.get< std::string >("HitModuleLabel", "gaushit") ),
+  fTrackModuleLabel( p.get< std::string >("TrackModuleLabel", "pandoraTrack") ),
+  fTrackMinLen( p.get< float  >("TrackMinLen", 20.0) ),
+  fWritePlots(p.get<int>("OutLevel", 1))
   {
     fGeom    = &*art::ServiceHandle<geo::Geometry>();
     fWireReadoutGeom = &art::ServiceHandle<geo::WireReadout>()->Get();
@@ -179,12 +195,10 @@ void pdvdana::CheckHitsAndTracks::analyze(art::Event const& ev)
 
   // get tracks
 
-  string hittag = "gaushit";
+  string hittag = "hitpdune";
   art::InputTag hit_tag(fHitModuleLabel);
   string trcktag = "pandoraTrack";
   art::InputTag trck_tag(trcktag);
-  string hittag_dis = "hitpdune";
-  art::InputTag hit_tag_dis(hittag_dis);
   string calotag = "pandoraGnocalo";//"calo";
   art::InputTag calo_tag(calotag);
   string clutag = "pandora";
@@ -200,27 +214,37 @@ void pdvdana::CheckHitsAndTracks::analyze(art::Event const& ev)
 
   ev_num++;
 
-  auto Tracks = ev.getValidHandle<vector<recob::Track>>(trck_tag);
-  auto Hits = ev.getValidHandle<vector<recob::Hit>>(hit_tag);
+  art::Handle< std::vector< recob::Track >> Tracks;
+  ev.getByLabel(trck_tag, Tracks);
+  if(!Tracks) return;
+
+  art::Handle< std::vector< recob::Hit >> Hits;
+  ev.getByLabel(hit_tag, Hits);
+  if(!Hits) return;
 
   const art::FindManyP<recob::Track> fmp(Hits ,ev ,trcktag);
+  art::FindOneP<recob::Track> fop_hit2trk(Hits, ev, trcktag);
 
   fTotalTracks += Tracks->size();
   fEventNum = ev_num;
 
   vector<float> track_charac(6);
 
-  auto const hitHandle = ev.getValidHandle<std::vector<recob::Hit>>(hit_tag);
-  std::vector<art::Ptr<recob::Hit>> hits;
-  art::fill_ptr_vector(hits, hitHandle);
+  // auto const hitHandle = ev.getValidHandle<std::vector<recob::Hit>>(hit_tag);
+
+  // std::vector<art::Ptr<recob::Hit>> hits;
+  // art::fill_ptr_vector(hits, hitHandle);
 
   if (fLogLevel>=fFlagInfos){
     cout<<myname<<Hits->size()<<" hits found"<<endl;
     cout<<myname<<Tracks->size()<<" tracks found"<<endl;
   }
-
+  if (fLogLevel>=fFlagBasics && ev_num%10==0)
+    cout<<myname<<" processing event : "<<ev_num<<endl;
+  
   // Get the hits associated with the space points
-  const art::FindManyP<recob::SpacePoint> fmsph(hitHandle, ev, cluster_tag);
+  const art::FindManyP<recob::SpacePoint> fmsph(Hits, ev, clutag);
+
   if (!fmsph.isValid()) {
     throw cet::exception("LArPandoraShowerCheatingAlg")
       << "Spacepoint and hit association not valid. Stopping.";
@@ -228,9 +252,15 @@ void pdvdana::CheckHitsAndTracks::analyze(art::Event const& ev)
 
   //----------------------------------------------------------------------------------------------
   //Loops on tracks
+  
   for (unsigned itrk = 0; itrk < Tracks->size(); ++itrk) {
     const recob::Track& track = Tracks->at(itrk);
+    
     ftrackLen    = track.Length();
+    ftrackEndWire = {-9999, -9999, -9999};
+    ftrackStartWire= {-9999, -9999, -9999};
+    ftrackEndChannel= {-9999, -9999, -9999};
+    ftrackStartChannel= {-9999, -9999, -9999};
 
     if (ftrackLen<fTrackMinLen)
       continue;
@@ -252,7 +282,6 @@ void pdvdana::CheckHitsAndTracks::analyze(art::Event const& ev)
     ftracktheta = track_charac[4];
     ftrackphi = track_charac[5];
     fTrackId     = 0;
-    ftrackTree->Fill();
 
     if (fLogLevel>=fFlagDetails){
       cout <<myname<< "-- Track: "<<itrk<<" x,y,z: (" <<ftrackStartX<<"; "<< ftrackStartY<<"; "<< ftrackStartZ<<" ) | x,y,z: ("<< ftrackEndX<<"; "<< ftrackEndY<<"; "<< ftrackEndZ<<")"<<endl;
@@ -279,14 +308,16 @@ void pdvdana::CheckHitsAndTracks::analyze(art::Event const& ev)
           cout<<"---> Carefull, start and end are in different TPCs"<<endl;
         }
         try{
-          g_wireID_s = fWireReadoutGeom->NearestWireID(track.Start(), geo::PlaneID(0, tpc_s.TPC, id_pl));
+          g_wireID_s = fWireReadoutGeom->Plane(geo::PlaneID(0, tpc_s.TPC, id_pl)).NearestWireID(track.Start());
+          //g_wireID_s = geo::PlaneID(0, tpc_s.TPC, id_pl).NearestWireID(track.Start());
         }
         catch(geo::InvalidWireError const& e_1) {
           g_wireID_s = e_1.suggestedWireID(); // pick the closest valid wire
         }
         //Looking for the wire associated with the end of the track
         try{
-          g_wireID_e = fWireReadoutGeom->NearestWireID(track.End(), geo::PlaneID(0, tpc_e.TPC, id_pl));
+          g_wireID_e = fWireReadoutGeom->Plane(geo::PlaneID(0, tpc_e.TPC, id_pl)).NearestWireID(track.End());
+          //g_wireID_e = geo::PlaneID(0, tpc_e.TPC, id_pl).NearestWireID(track.End());
         }
         catch(geo::InvalidWireError const& e_2) {
           g_wireID_e = e_2.suggestedWireID(); // pick the closest valid wire
@@ -295,7 +326,7 @@ void pdvdana::CheckHitsAndTracks::analyze(art::Event const& ev)
         wireID_s = g_wireID_s.Wire;
         wireID_e = g_wireID_e.Wire;
 
-        if ((wireID_e!=-9999) && (wireID_s!=-9999)){
+        // if ((wireID_e!=-9999) && (wireID_s!=-9999)){
 
           wireID_s += GetWireOffset(id_pl, tpc_s.TPC);
           wireID_e += GetWireOffset(id_pl, tpc_e.TPC);
@@ -303,43 +334,69 @@ void pdvdana::CheckHitsAndTracks::analyze(art::Event const& ev)
             cout<<"---- START - TPC: "<<tpc_s.TPC <<" wire ID: "<< wireID_s<<" | END : "<<tpc_e.TPC << " wire ID: "<< wireID_e << endl;
           fTrackStartWireID[id_pl].push_back(g_wireID_s.Wire + GetWireOffset(id_pl, tpc_s.TPC));
           fTrackEndWireID[id_pl].push_back( g_wireID_e.Wire + GetWireOffset(id_pl, tpc_e.TPC));
+          ftrackEndWire[id_pl] = (g_wireID_s.Wire + GetWireOffset(id_pl, tpc_s.TPC));
+          ftrackStartWire[id_pl] = (g_wireID_e.Wire + GetWireOffset(id_pl, tpc_e.TPC));
           fSelectedTracks++;
-        }
-      }
-    }
+        // }
+        
+      }// End of the loop on the planes (U, V, Z)
+
+    }// End of the condition on validity of the TPCs
     vector<float> pos_track = {ftrackStartX, ftrackStartY, ftrackStartZ, ftrackEndX, ftrackEndY, ftrackEndZ};
     trackSpacePoints.push_back(pos_track);
+    fCathodeCrossing=false;
+    if (ftrackStartX*ftrackEndX<0){
+      fCathodeCrossing = true;
+    }
+    if(fWritePlots>=fWriteOnlyTrees)
+      ftrackTree->Fill();
+
   }// Tracks loop
 
   //----------------------------------------------------------------------------------------------
   //Loop on hits
-  for (auto hit : hits) {
-    std::vector<art::Ptr<recob::Track>> tracks = fmp.at(hit.key());
-    std::vector<art::Ptr<recob::SpacePoint>> sps = fmsph.at(hit.key());
+  for (unsigned ihit = 0; ihit < Hits->size(); ++ihit) {
+    const recob::Hit& hit = Hits->at(ihit);
 
-    if (sps.size() == 1 && tracks.size()==1) {
-      art::Ptr<recob::SpacePoint> sp = sps.front();
-      fhitX = sp->XYZ()[0];
-      fhitY = sp->XYZ()[1];
-      fhitZ = sp->XYZ()[2];
-      fTrackId     = 0;
+    std::vector<art::Ptr<recob::Track>> hit_corres_track = fmp.at(ihit);
+    art::Ptr<recob::Track> pt_hit = fop_hit2trk.at(ihit);
+    std::vector<art::Ptr<recob::SpacePoint>> sps = fmsph.at(ihit);
+    if (pt_hit)
+    if (sps.size() > 0){  
+      // cout<<"\033[1;91m" "at the edge of the hits loop -  hit :"<<hit.key()<< " - sps size " <<sps.size()<<" - track size "<<hit_corres_track.size()<<" " <<endl;
+      if(hit_corres_track.size()==1) {
 
-      geo::WireID hit_wireID = hit->WireID();
+        fHitSelected = false;
+        if (hit_corres_track[0]->Length()>20 and (hit_corres_track[0]->Start().X())*(hit_corres_track[0]->End().X())<0)
+          fHitSelected = true;
+        
+        art::Ptr<recob::SpacePoint> sp = sps.front();
+        fhitX = sp->XYZ()[0];
+        fhitY = sp->XYZ()[1];
+        fhitZ = sp->XYZ()[2];
+        fTrackId     = 0;
+        // cout<<"\033[1;91m" "Still in the hits loop"<<endl;
+        
+
+        // if (fhitTime>10000)
+        //   continue;
+
+        std::vector<geo::WireID> cwids = fWireReadoutGeom->ChannelToWire(fhitChannel);
+        vector_Hits_tpc_channel[fhitPlane].push_back(fhitChannel);
+        vector_Hits_tpc_time[fhitPlane].push_back(fhitChannel);
+        vector<float> pos_sp = {fhitX, fhitY, fhitZ};
+        vertexSpacePoints.push_back(pos_sp);
+
+        }
+      }
+      geo::WireID hit_wireID = hit.WireID();
       fhitTPC = hit_wireID.TPC;
       fhitPlane = hit_wireID.Plane;
       fhitWire = hit_wireID.Wire+GetWireOffset(fhitPlane, fhitTPC);
-      fhitTime = hit->PeakTime();
-      fhitChannel = hit->Channel();
-      if (fhitTime>10000)
-        continue;
-
-      std::vector<geo::WireID> cwids = fWireReadoutGeom->ChannelToWire(fhitChannel);
-      vector_Hits_tpc_channel[fhitPlane].push_back(fhitChannel);
-      vector_Hits_tpc_time[fhitPlane].push_back(fhitChannel);
-      vector<float> pos_sp = {fhitX, fhitY, fhitZ};
-      vertexSpacePoints.push_back(pos_sp);
-      fhitTree->Fill();
-      }
+      fhitTime = hit.PeakTime();
+      fhitChannel = hit.Channel();
+      if(fWritePlots>=fWriteOnlyTrees)
+        fhitTree->Fill();
   }// Hits loop
 
 
@@ -351,26 +408,27 @@ void pdvdana::CheckHitsAndTracks::analyze(art::Event const& ev)
 
   gStyle->SetOptStat(0);
 
-  //Drawing 3D tracks
-  TString canvasName_3D = Form("canvas3D_%i", ev_num);
-  TCanvas* canvas_3D = tfs->make<TCanvas>(canvasName_3D, canvasName_3D);
-  Drawing3D_HitsAndTracks(canvas_3D, trackSpacePoints, vertexSpacePoints);
-  canvas_3D->Write(canvasName_3D);
+  if((ev_num<=5) && (fWritePlots>=fWriteTreesAndCheckPlots) ){
+    //Drawing 3D tracks
+    cout<<"On devrait avoir des plots ici aussi"<<endl;
+    TString canvasName_3D = Form("canvas3D_%i", ev_num);
+    TCanvas* canvas_3D = tfs->make<TCanvas>(canvasName_3D, canvasName_3D);
+    Drawing3D_HitsAndTracks(canvas_3D, trackSpacePoints, vertexSpacePoints);
+    canvas_3D->Write(canvasName_3D);
 
 
-  TString canvasName_xy = Form("canvasxy_%i", ev_num);
-  TCanvas* canvas_xy = tfs->make<TCanvas>(canvasName_xy, canvasName_xy);
-  Drawing2D_HitsAndTracks(canvas_xy, trackSpacePoints, vertexSpacePoints);
-  canvas_xy->Write(canvasName_xy);
+    TString canvasName_xy = Form("canvasxy_%i", ev_num);
+    TCanvas* canvas_xy = tfs->make<TCanvas>(canvasName_xy, canvasName_xy);
+    Drawing2D_HitsAndTracks(canvas_xy, trackSpacePoints, vertexSpacePoints);
+    canvas_xy->Write(canvasName_xy);
 
 
-  //Drawing TPC canvas -> comparison hits (wire, time) with start/end tracks (only wire, time is arbitrary)
-  TString canvasName_tpc = Form("canvastpc_%i", ev_num);
-  TCanvas* canvas_tpc = tfs->make<TCanvas>(canvasName_tpc, canvasName_tpc);
-  DrawingTPC_HitsAndTracks(canvas_tpc, vector_Hits_tpc_channel, vector_Hits_tpc_time, fTrackStartWireID, fTrackEndWireID);
-  canvas_tpc->Write(canvasName_tpc);
-
-
+    //Drawing TPC canvas -> comparison hits (wire, time) with start/end tracks (only wire, time is arbitrary)
+    TString canvasName_tpc = Form("canvastpc_%i", ev_num);
+    TCanvas* canvas_tpc = tfs->make<TCanvas>(canvasName_tpc, canvasName_tpc);
+    DrawingTPC_HitsAndTracks(canvas_tpc, vector_Hits_tpc_channel, vector_Hits_tpc_time, fTrackStartWireID, fTrackEndWireID);
+    canvas_tpc->Write(canvasName_tpc);
+  }
 }
 //
 void pdvdana::CheckHitsAndTracks::beginJob()
@@ -436,38 +494,44 @@ void pdvdana::CheckHitsAndTracks::beginJob()
   art::ServiceHandle<art::TFileService> tfs;
 
   ftrackTree = tfs->make<TTree>("tracks","Check tracks");
-  ftrackTree->Branch("EventNum", &fEventNum, "EventNum/i");
-  ftrackTree->Branch("TrackId", &fTrackId, "TrackId/i");
-  ftrackTree->Branch("TrackLen",   &ftrackLen,   "TrackLen/F");
-  ftrackTree->Branch("Dx",  &ftrackDx,  "Dx/F");
-  ftrackTree->Branch("Dy",  &ftrackDy,  "Dy/F");
-  ftrackTree->Branch("Dz",  &ftrackDz,  "Dz/F");
-  ftrackTree->Branch("StartX",  &ftrackStartX,  "StartX/F");
-  ftrackTree->Branch("StartY",  &ftrackStartY,  "StartY/F");
-  ftrackTree->Branch("StartZ",  &ftrackStartZ,  "StartZ/F");
-  ftrackTree->Branch("StartTick",  &ftrackStartTick,  "StartTick/i");
+  ftrackTree->Branch("EventNum", &fEventNum);
+  ftrackTree->Branch("TrackId", &fTrackId);
+  ftrackTree->Branch("TrackLen",   &ftrackLen);
+  ftrackTree->Branch("Dx",  &ftrackDx);
+  ftrackTree->Branch("Dy",  &ftrackDy);
+  ftrackTree->Branch("Dz",  &ftrackDz);
+  ftrackTree->Branch("StartX",  &ftrackStartX);
+  ftrackTree->Branch("StartY",  &ftrackStartY);
+  ftrackTree->Branch("StartZ",  &ftrackStartZ);
+  ftrackTree->Branch("StartWire",  &ftrackStartWire);
+  ftrackTree->Branch("StartTick",  &ftrackStartTick);
+  ftrackTree->Branch("StartChannel",  &ftrackStartChannel);
+  ftrackTree->Branch("CathodeCrossing",  &fCathodeCrossing);
 
-  ftrackTree->Branch("EndX",  &ftrackEndX,  "EndX/F");
-  ftrackTree->Branch("EndY",  &ftrackEndY,  "EndY/F");
-  ftrackTree->Branch("EndZ",  &ftrackEndZ,  "EndZ/F");
-  ftrackTree->Branch("EndTick",  &ftrackEndTick,  "EndTick/i");
+  ftrackTree->Branch("EndX",  &ftrackEndX);
+  ftrackTree->Branch("EndY",  &ftrackEndY);
+  ftrackTree->Branch("EndZ",  &ftrackEndZ);
+  ftrackTree->Branch("EndWire",  &ftrackEndWire);
+  ftrackTree->Branch("EndChannel",  &ftrackEndChannel);
+  ftrackTree->Branch("EndTick",  &ftrackEndTick);
 
-  ftrackTree->Branch("theta",&ftracktheta,  "theta/F");
-  ftrackTree->Branch("phi",  &ftrackphi,  "phi/F");
-  ftrackTree->Branch("norm", &ftracknorm,  "norm/F");
+  ftrackTree->Branch("theta",&ftracktheta);
+  ftrackTree->Branch("phi",  &ftrackphi);
+  ftrackTree->Branch("norm", &ftracknorm);
 
 
   fhitTree  = tfs->make<TTree>("hits","Check reconstruction");
-  fhitTree->Branch("X", &fhitX, "X/F");
-  fhitTree->Branch("Y", &fhitY, "Y/F");
-  fhitTree->Branch("Z", &fhitZ, "Z/F");
-  fhitTree->Branch("EventNum", &fEventNum, "EventNum/i");
-  fhitTree->Branch("TrackId",  &fTrackId, "TrackId/i");
-  fhitTree->Branch("Plane",  &fhitPlane, "Plane/i");
-  fhitTree->Branch("TPC", &fhitTPC, "TPC/i");
-  fhitTree->Branch("Wire",  &fhitWire, "Wire/i");
-  fhitTree->Branch("Channel", &fhitChannel, "Channel/i");
-  fhitTree->Branch("Time", &fhitTime, "Time/i");
+  fhitTree->Branch("X", &fhitX);
+  fhitTree->Branch("Y", &fhitY);
+  fhitTree->Branch("Z", &fhitZ);
+  fhitTree->Branch("EventNum", &fEventNum);
+  fhitTree->Branch("TrackId",  &fTrackId);
+  fhitTree->Branch("Plane",  &fhitPlane);
+  fhitTree->Branch("TPC", &fhitTPC);
+  fhitTree->Branch("Wire",  &fhitWire);
+  fhitTree->Branch("Channel", &fhitChannel);
+  fhitTree->Branch("Time", &fhitTime);
+  fhitTree->Branch("Selected", &fHitSelected);
 
 }
 
