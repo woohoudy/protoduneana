@@ -1,7 +1,10 @@
-#include "services_dune.fcl"
-#include "services_vdcoldbox.fcl" 
-#include "ProtoDUNECalibration.fcl"
-#include "tools_dune.fcl"	
+##with PROLOG
+#include "services_dune.fcl"       
+#include "ProtoDUNECalibration.fcl" 
+#include "SingleHitParameters.fcl" 	
+
+##without PROLOG
+#include "tools_dune.fcl"           
 
 process_name: SingleHit
 
@@ -15,65 +18,41 @@ services:
 {
   TFileService: { fileName: "singleHitOutput.root" }
   
-  TimeTracker:                    @local::dune_time_tracker
-  MemoryTracker:                  @local::dune_memory_tracker
-  RandomNumberGenerator:          {} #ART native random number generator
+  TimeTracker:                  @local::dune_time_tracker
+  MemoryTracker:                @local::dune_memory_tracker
+  RandomNumberGenerator:        {} #ART native random number generator
    
-  ExptGeoHelperInterface:         @local::dune_geometry_helper
-  DetectorPropertiesService:      @local::protodunesp_detproperties
-  FileCatalogMetadata:            @local::art_file_catalog_mc
-                                  @table::protodune_services
-                                  @table::protodune_simulation_services
-                                  @table::protodune_data_reco_services
-  LArPropertiesService:           @local::dunefd_properties
-  IFDH:                           {}
-  #CalibrationServices:            @local::CalorimetryParameters_SPProd4_MC_SCE
+  WireReadout:                  @local::dune_wire_readout
+  FileCatalogMetadata:          @local::art_file_catalog_data
+  ChannelStatusService:         @local::dunefd_channel_status
+
+  Geometry:                     @local::protodunehdv6_geo
+  DetectorClocksService:        @local::protodunehd_detectorclocks
+  DetectorPropertiesService:    @local::protodunehd_detproperties
+  LArPropertiesService:         @local::dunefd_properties
+  LArFFT:                       @local::dunefd_larfft
+  DatabaseUtil:                 @local::dunefd_database
+  BackTrackerService:           @local::pdsp_backtrackerservice
+  ParticleInventoryService:     @local::dunefd_particleinventoryservice
+  PhotonBackTrackerService:     @local::dunefd_photonbacktrackerservice_legacy
+  SpaceCharge:                  @local::pdhd_spacecharge
+
+
+  IFDH:                         {}
+
 }
 
-services.Geometry.Name: "protodunehdv6"
+services.AuxDetGeometry.GDML: "protodunehd_v6_refactored.gdml"
+services.AuxDetGeometry.Name: "protodunehdv6"
+
 physics:
 {
   analyzers:
   {
-    ana:
-    {
-      module_type: "SingleHit"
-      LogLevel:     5
-
-      SpacePointLabel:   "reco3d"
-      ClusterLabel:      "pandora"
-      TrackLabel:        "pandoroTrack"
-      HitLabel:          "hitpdune"
-
-      HitMultiplicity:      3
-
-      RadiusInt:            3    # in cm
-      RadiusExt:            6    # in cm
-      ElectronVelocity:     0.16 # in cm/mus
-      TickTimeInMus:        0.4  # in mus/tt
-      CoincidenceWindow:    4    # in mus
-      TimePlane1ToPlane2:   2    # in mus
-      Pitch:                0.5  # in cm
-      PitchMultiplier:      1.2
-
-      #Cluster variables
-      NumberInitClusters:   1
-      MaxSizeCluster:       4    # in cm
-      MinSizeCluster:       0.5  # in cm
-      ClusterSizeMulti:     1.2
-      NumberConvStep:       200
-      Covering:             0.97
-      #tagPD:                1    # = 1 ->PDHD = 0 -> PDVD (for calib. factor)
-
-      #Calibration:          CalibrationServices.PlaneParameters.calib_factor
-      #ChannelWindowInt:     1
-      #ChannelWindowExt:     2
-      #PeakTimeWindowInt:    20
-      #PeakTimeWindowExt:    2
-    }
+    ana:@local::SingleHitParams
   }
 
   analysis: [ ana ]
   end_paths: [ analysis ]
 }
-
+physics.analyzers.ana.IsPDHD: true
